@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+env/
+
+# Datasets and generated face crops (too large for git)
+data/
+datasets/
+*.mp4
+*.avi
+*.mov
+*.zip
+
+# Trained models (download from Colab / Drive instead)
+models/
+*.h5
+*.keras
+
+# Generated evaluation outputs
+reports/
+
+# Notebook / editor clutter
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store

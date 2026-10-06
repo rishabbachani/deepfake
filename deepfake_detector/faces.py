@@ -15,6 +15,10 @@ import numpy as np
 
 from .config import FACE_MARGIN, IMG_SIZE, MIN_FACE_CONFIDENCE
 
+# MTCNN's run time grows with image size, so large photos are searched at this
+# size (longest side, pixels). The crop itself is still cut from the original.
+MAX_DETECT_SIDE = 800
+
 
 def load_image_rgb(path: str | Path) -> np.ndarray | None:
     """Read an image file as an RGB uint8 array, or None if it cannot be decoded."""
@@ -94,6 +98,17 @@ def resize_full(image: np.ndarray, size: int = IMG_SIZE) -> np.ndarray:
                       interpolation=cv2.INTER_AREA)
 
 
+def _shrink(image: np.ndarray, max_side: int = MAX_DETECT_SIDE) -> tuple[np.ndarray, float]:
+    """Downscale an image for face detection; returns the image and the scale used."""
+    h, w = image.shape[:2]
+    scale = min(1.0, max_side / max(h, w))
+    if scale == 1.0:
+        return image, 1.0
+    small = cv2.resize(image, (int(round(w * scale)), int(round(h * scale))),
+                       interpolation=cv2.INTER_AREA)
+    return small, scale
+
+
 class FaceExtractor:
     """Thin wrapper around MTCNN that returns ready-to-classify face crops."""
 
@@ -119,23 +134,26 @@ class FaceExtractor:
         faces = [f for f in detections if f.get("confidence", 0.0) >= self.min_confidence]
         return max(faces, key=lambda f: f["box"][2] * f["box"][3]) if faces else None
 
+    def _crop(self, image: np.ndarray, face: dict | None, scale: float) -> np.ndarray | None:
+        if face is None:
+            return None
+        box = [int(round(v / scale)) for v in face["box"]]
+        return square_crop(image, box, self.margin, self.size)
+
     def largest_face(self, image: np.ndarray) -> np.ndarray | None:
         """Crop of the largest detected face, or None if no face is found."""
-        face = self._largest(self._detector.detect_faces(image))
-        return None if face is None else square_crop(image, face["box"], self.margin, self.size)
+        small, scale = _shrink(image)
+        return self._crop(image, self._largest(self._detector.detect_faces(small)), scale)
 
     def largest_faces(self, images: list[np.ndarray]) -> list[np.ndarray | None]:
         """Batched version of largest_face (about 3x faster for same-sized images)."""
         if not self._supports_batch or len(images) < 2 or len({im.shape for im in images}) > 1:
             return [self.largest_face(im) for im in images]
+        shrunk = [_shrink(im) for im in images]
         try:
-            batch = self._detector.detect_faces(images)
+            batch = self._detector.detect_faces([small for small, _ in shrunk])
         except Exception:  # noqa: BLE001 - older mtcnn only accepts one image
             self._supports_batch = False
             return [self.largest_face(im) for im in images]
-        crops = []
-        for image, detections in zip(images, batch):
-            face = self._largest(detections)
-            crops.append(None if face is None else
-                         square_crop(image, face["box"], self.margin, self.size))
-        return crops
+        return [self._crop(image, self._largest(detections), scale)
+                for image, (_, scale), detections in zip(images, shrunk, batch)]
